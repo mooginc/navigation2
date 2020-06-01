@@ -71,12 +71,19 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
     rclcpp::SystemDefaultsQoS(),
     std::bind(&BtNavigator::onGoalPoseReceived, this, std::placeholders::_1));
 
-  action_server_ = std::make_unique<ActionServer>(
+  navigate_to_pose_action_server_ = std::make_unique<NavigateToPoseActionServer>(
     get_node_base_interface(),
     get_node_clock_interface(),
     get_node_logging_interface(),
     get_node_waitables_interface(),
     "NavigateToPose", std::bind(&BtNavigator::navigateToPose, this), false);
+
+  follow_waypoints_action_server_ = std::make_unique<FollowWaypointsActionServer>(
+    get_node_base_interface(),
+    get_node_clock_interface(),
+    get_node_logging_interface(),
+    get_node_waitables_interface(),
+    "FollowWaypoints", std::bind(&BtNavigator::followWaypoints, this), false);
 
   // Get the libraries to pull plugins from
   get_parameter("plugin_lib_names", plugin_lib_names_);
@@ -120,7 +127,8 @@ BtNavigator::on_activate(const rclcpp_lifecycle::State & /*state*/)
 {
   RCLCPP_INFO(get_logger(), "Activating");
 
-  action_server_->activate();
+  navigate_to_pose_action_server_->activate();
+  follow_waypoints_action_server_->activate();
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -130,7 +138,8 @@ BtNavigator::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
 {
   RCLCPP_INFO(get_logger(), "Deactivating");
 
-  action_server_->deactivate();
+  navigate_to_pose_action_server_->deactivate();
+  follow_waypoints_action_server_->deactivate();
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -151,7 +160,8 @@ BtNavigator::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   tf_listener_.reset();
   tf_.reset();
 
-  action_server_.reset();
+  navigate_to_pose_action_server_.reset();
+  follow_waypoints_action_server_.reset();
   plugin_lib_names_.clear();
   xml_string_.clear();
   blackboard_.reset();
@@ -181,17 +191,17 @@ BtNavigator::navigateToPose()
   initializeGoalPose();
 
   auto is_canceling = [this]() {
-      if (action_server_ == nullptr) {
+      if (navigate_to_pose_action_server_ == nullptr) {
         RCLCPP_DEBUG(get_logger(), "Action server unavailable. Canceling.");
         return true;
       }
 
-      if (!action_server_->is_server_active()) {
+      if (!navigate_to_pose_action_server_->is_server_active()) {
         RCLCPP_DEBUG(get_logger(), "Action server is inactive. Canceling.");
         return true;
       }
 
-      return action_server_->is_cancel_requested();
+      return navigate_to_pose_action_server_->is_cancel_requested();
     };
 
   // Create the Behavior Tree from the XML input
@@ -200,9 +210,9 @@ BtNavigator::navigateToPose()
   RosTopicLogger topic_logger(client_node_, tree);
 
   auto on_loop = [&]() {
-      if (action_server_->is_preempt_requested()) {
+      if (navigate_to_pose_action_server_->is_preempt_requested()) {
         RCLCPP_INFO(get_logger(), "Received goal preemption request");
-        action_server_->accept_pending_goal();
+        navigate_to_pose_action_server_->accept_pending_goal();
         initializeGoalPose();
       }
       topic_logger.flush();
@@ -214,17 +224,17 @@ BtNavigator::navigateToPose()
   switch (rc) {
     case nav2_behavior_tree::BtStatus::SUCCEEDED:
       RCLCPP_INFO(get_logger(), "Navigation succeeded");
-      action_server_->succeeded_current();
+      navigate_to_pose_action_server_->succeeded_current();
       break;
 
     case nav2_behavior_tree::BtStatus::FAILED:
       RCLCPP_ERROR(get_logger(), "Navigation failed");
-      action_server_->terminate_current();
+      navigate_to_pose_action_server_->terminate_current();
       break;
 
     case nav2_behavior_tree::BtStatus::CANCELED:
       RCLCPP_INFO(get_logger(), "Navigation canceled");
-      action_server_->terminate_all();
+      navigate_to_pose_action_server_->terminate_all();
       break;
 
     default:
@@ -233,9 +243,15 @@ BtNavigator::navigateToPose()
 }
 
 void
+BtNavigator::followWaypoints()
+{
+  // TODO
+}
+
+void
 BtNavigator::initializeGoalPose()
 {
-  auto goal = action_server_->get_current_goal();
+  auto goal = navigate_to_pose_action_server_->get_current_goal();
 
   RCLCPP_INFO(get_logger(), "Begin navigating from current location to (%.2f, %.2f)",
     goal->pose.pose.position.x, goal->pose.pose.position.y);
