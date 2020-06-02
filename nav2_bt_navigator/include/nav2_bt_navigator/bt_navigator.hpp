@@ -110,6 +110,8 @@ protected:
    */
   void initializeGoalPose();
 
+  void initializeWaypoints();
+
   /**
    * @brief A subscription and callback to handle the topic-based goal published
    * from rviz
@@ -120,8 +122,8 @@ protected:
   // The blackboard shared by all of the nodes in the tree
   BT::Blackboard::Ptr blackboard_;
 
-  // The XML string that defines the Behavior Tree to create
-  std::string xml_string_;
+  // The XML strings that defines the Behavior Trees to create
+  std::vector<std::string> xml_strings_;
 
   // The wrapper class for the BT functionality
   std::unique_ptr<nav2_behavior_tree::BehaviorTreeEngine> bt_;

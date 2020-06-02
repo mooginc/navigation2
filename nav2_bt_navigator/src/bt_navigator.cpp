@@ -33,7 +33,8 @@ BtNavigator::BtNavigator()
   RCLCPP_INFO(get_logger(), "Creating");
 
   // Declare this node's parameters
-  declare_parameter("bt_xml_filename");
+  declare_parameter("bt_xml_filenames",
+    rclcpp::ParameterValue(std::vector<std::string>({"navigate_behavior_tree_path_to_goal.xml"})));
 
   declare_parameter("plugin_lib_names",
     rclcpp::ParameterValue(std::vector<std::string>({"nav2_behavior_tree_nodes"})));
@@ -102,22 +103,24 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
   blackboard_->set<bool>("initial_pose_received", false);  // NOLINT
 
   // Get the BT filename to use from the node parameter
-  std::string bt_xml_filename;
-  get_parameter("bt_xml_filename", bt_xml_filename);
+  std::vector<std::string> bt_xml_filenames;
+  get_parameter("bt_xml_filenames", bt_xml_filenames);
 
-  // Read the input BT XML from the specified file into a string
-  std::ifstream xml_file(bt_xml_filename);
+  // Read the input BT XML from the specified files into strings
+  for (size_t i = 0; i < bt_xml_filenames.size(); i++){
+    std::ifstream xml_file(bt_xml_filenames[i]);
 
-  if (!xml_file.good()) {
-    RCLCPP_ERROR(get_logger(), "Couldn't open input XML file: %s", bt_xml_filename.c_str());
-    return nav2_util::CallbackReturn::FAILURE;
+    if (!xml_file.good()) {
+      RCLCPP_ERROR(get_logger(), "Couldn't open input XML file: %s", bt_xml_filenames[i].c_str());
+      return nav2_util::CallbackReturn::FAILURE;
+    }
+
+    xml_strings_.push_back(std::string(std::istreambuf_iterator<char>(xml_file),
+        std::istreambuf_iterator<char>()));
+
+    RCLCPP_DEBUG(get_logger(), "Behavior Tree file: '%s'", bt_xml_filenames[i].c_str());
+    RCLCPP_DEBUG(get_logger(), "Behavior Tree XML: %s", xml_strings_[i].c_str());
   }
-
-  xml_string_ = std::string(std::istreambuf_iterator<char>(xml_file),
-      std::istreambuf_iterator<char>());
-
-  RCLCPP_DEBUG(get_logger(), "Behavior Tree file: '%s'", bt_xml_filename.c_str());
-  RCLCPP_DEBUG(get_logger(), "Behavior Tree XML: %s", xml_string_.c_str());
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -163,7 +166,7 @@ BtNavigator::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   navigate_to_pose_action_server_.reset();
   follow_waypoints_action_server_.reset();
   plugin_lib_names_.clear();
-  xml_string_.clear();
+  xml_strings_.clear();
   blackboard_.reset();
   bt_.reset();
 
@@ -205,7 +208,8 @@ BtNavigator::navigateToPose()
     };
 
   // Create the Behavior Tree from the XML input
-  BT::Tree tree = bt_->buildTreeFromText(xml_string_, blackboard_);
+  // TODO: find placement in xml_strings_
+  BT::Tree tree = bt_->buildTreeFromText(xml_strings_[0], blackboard_);
 
   RosTopicLogger topic_logger(client_node_, tree);
 
@@ -245,7 +249,62 @@ BtNavigator::navigateToPose()
 void
 BtNavigator::followWaypoints()
 {
-  // TODO
+  initializeWaypoints();
+
+  auto is_canceling = [this]() {
+    if (follow_waypoints_action_server_ == nullptr) {
+      RCLCPP_DEBUG(get_logger(), "Follow waypoints action server unavailable. Canceling.");
+      return true;
+    }
+
+    if (!follow_waypoints_action_server_->is_server_active()) {
+      RCLCPP_DEBUG(get_logger(), "Follow waypoints action server is inactive. Canceling.");
+      return true;
+    }
+
+    return follow_waypoints_action_server_->is_cancel_requested();
+  };
+
+  // Create the Behavior Tree from the XML input
+  // TODO: find placement in xml_strings_
+  BT::Tree tree = bt_->buildTreeFromText(xml_strings_[1], blackboard_);
+
+  RosTopicLogger topic_logger(client_node_, tree);
+
+
+  auto on_loop = [&]() {
+      // if (follow_waypoints_action_server_>is_preempt_requested()) {
+      //   RCLCPP_INFO(get_logger(), "Received follow waypoints goal preemption request");
+      //   follow_waypoints_action_server_->accept_pending_goal();
+      //   initializeWaypoints();
+      // }
+      topic_logger.flush();
+    };
+
+  // Execute the BT that was previously created in the configure step
+  nav2_behavior_tree::BtStatus rc = bt_->run(&tree, on_loop, is_canceling);
+
+  switch (rc) {
+    case nav2_behavior_tree::BtStatus::SUCCEEDED:
+      RCLCPP_INFO(get_logger(), "Navigation succeeded");
+      follow_waypoints_action_server_->succeeded_current();
+      break;
+
+    case nav2_behavior_tree::BtStatus::FAILED:
+      RCLCPP_ERROR(get_logger(), "Navigation failed");
+      follow_waypoints_action_server_->terminate_current();
+      break;
+
+    case nav2_behavior_tree::BtStatus::CANCELED:
+      RCLCPP_INFO(get_logger(), "Navigation canceled");
+      follow_waypoints_action_server_->terminate_all();
+      break;
+
+    default:
+      throw std::logic_error("Invalid status return from BT");
+  }
+
+
 }
 
 void
@@ -258,6 +317,17 @@ BtNavigator::initializeGoalPose()
 
   // Update the goal pose on the blackboard
   blackboard_->set("goal", goal->pose);
+}
+
+void
+BtNavigator::initializeWaypoints()
+{
+  auto goal = follow_waypoints_action_server_->get_current_goal();
+
+  RCLCPP_INFO(get_logger(), "Begin follow waypoints");
+
+  // Update the goal pose on the blackboard
+  blackboard_->set("goal", goal->poses[goal->poses.size() - 1]);
 }
 
 void
