@@ -34,7 +34,9 @@ BtNavigator::BtNavigator()
 
   // Declare this node's parameters
   declare_parameter("bt_xml_filenames",
-    rclcpp::ParameterValue(std::vector<std::string>({"navigate_behavior_tree_path_to_goal.xml"})));
+    rclcpp::ParameterValue(std::vector<std::string>({"navigate_behavior_tree_follow_waypoints.xml",
+      "navigate_behavior_tree_path_to_goal.xml"
+      })));
 
   declare_parameter("plugin_lib_names",
     rclcpp::ParameterValue(std::vector<std::string>({"nav2_behavior_tree_nodes"})));
@@ -57,8 +59,11 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
   // Support for handling the topic-based goal pose from rviz
   client_node_ = std::make_shared<rclcpp::Node>("_", options);
 
-  self_client_ = rclcpp_action::create_client<nav2_msgs::action::NavigateToPose>(
+  self_navigate_to_pose_client_ = rclcpp_action::create_client<nav2_msgs::action::NavigateToPose>(
     client_node_, "NavigateToPose");
+  
+  self_follow_path_client_ = rclcpp_action::create_client<nav2_msgs::action::FollowPath>(
+    client_node_, "FollowPath");
 
   tf_ = std::make_shared<tf2_ros::Buffer>(get_clock());
   auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
@@ -72,6 +77,7 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
     rclcpp::SystemDefaultsQoS(),
     std::bind(&BtNavigator::onGoalPoseReceived, this, std::placeholders::_1));
 
+  // Create action servers
   navigate_to_pose_action_server_ = std::make_unique<NavigateToPoseActionServer>(
     get_node_base_interface(),
     get_node_clock_interface(),
@@ -79,12 +85,12 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
     get_node_waitables_interface(),
     "NavigateToPose", std::bind(&BtNavigator::navigateToPose, this), false);
 
-  follow_waypoints_action_server_ = std::make_unique<FollowWaypointsActionServer>(
+  follow_path_action_server_ = std::make_unique<FollowPathActionServer>(
     get_node_base_interface(),
     get_node_clock_interface(),
     get_node_logging_interface(),
     get_node_waitables_interface(),
-    "FollowWaypoints", std::bind(&BtNavigator::followWaypoints, this), false);
+    "FollowPath", std::bind(&BtNavigator::followPath, this), false);
 
   // Get the libraries to pull plugins from
   get_parameter("plugin_lib_names", plugin_lib_names_);
@@ -108,6 +114,7 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
 
   // Read the input BT XML from the specified files into strings
   for (size_t i = 0; i < bt_xml_filenames.size(); i++){
+    // Read xml configuration
     std::ifstream xml_file(bt_xml_filenames[i]);
 
     if (!xml_file.good()) {
@@ -131,7 +138,7 @@ BtNavigator::on_activate(const rclcpp_lifecycle::State & /*state*/)
   RCLCPP_INFO(get_logger(), "Activating");
 
   navigate_to_pose_action_server_->activate();
-  follow_waypoints_action_server_->activate();
+  follow_path_action_server_->activate();
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -142,7 +149,7 @@ BtNavigator::on_deactivate(const rclcpp_lifecycle::State & /*state*/)
   RCLCPP_INFO(get_logger(), "Deactivating");
 
   navigate_to_pose_action_server_->deactivate();
-  follow_waypoints_action_server_->deactivate();
+  follow_path_action_server_->deactivate();
 
   return nav2_util::CallbackReturn::SUCCESS;
 }
@@ -157,14 +164,15 @@ BtNavigator::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
 
   goal_sub_.reset();
   client_node_.reset();
-  self_client_.reset();
+  self_navigate_to_pose_client_.reset();
+  self_follow_path_client_.reset();
 
   // Reset the listener before the buffer
   tf_listener_.reset();
   tf_.reset();
 
   navigate_to_pose_action_server_.reset();
-  follow_waypoints_action_server_.reset();
+  follow_path_action_server_.reset();
   plugin_lib_names_.clear();
   xml_strings_.clear();
   blackboard_.reset();
@@ -246,66 +254,6 @@ BtNavigator::navigateToPose()
   }
 }
 
-void
-BtNavigator::followWaypoints()
-{
-  initializeWaypoints();
-
-  auto is_canceling = [this]() {
-    if (follow_waypoints_action_server_ == nullptr) {
-      RCLCPP_DEBUG(get_logger(), "Follow waypoints action server unavailable. Canceling.");
-      return true;
-    }
-
-    if (!follow_waypoints_action_server_->is_server_active()) {
-      RCLCPP_DEBUG(get_logger(), "Follow waypoints action server is inactive. Canceling.");
-      return true;
-    }
-
-    return follow_waypoints_action_server_->is_cancel_requested();
-  };
-
-  // Create the Behavior Tree from the XML input
-  // TODO: find placement in xml_strings_
-  BT::Tree tree = bt_->buildTreeFromText(xml_strings_[1], blackboard_);
-
-  RosTopicLogger topic_logger(client_node_, tree);
-
-
-  auto on_loop = [&]() {
-      // if (follow_waypoints_action_server_>is_preempt_requested()) {
-      //   RCLCPP_INFO(get_logger(), "Received follow waypoints goal preemption request");
-      //   follow_waypoints_action_server_->accept_pending_goal();
-      //   initializeWaypoints();
-      // }
-      topic_logger.flush();
-    };
-
-  // Execute the BT that was previously created in the configure step
-  nav2_behavior_tree::BtStatus rc = bt_->run(&tree, on_loop, is_canceling);
-
-  switch (rc) {
-    case nav2_behavior_tree::BtStatus::SUCCEEDED:
-      RCLCPP_INFO(get_logger(), "Navigation succeeded");
-      follow_waypoints_action_server_->succeeded_current();
-      break;
-
-    case nav2_behavior_tree::BtStatus::FAILED:
-      RCLCPP_ERROR(get_logger(), "Navigation failed");
-      follow_waypoints_action_server_->terminate_current();
-      break;
-
-    case nav2_behavior_tree::BtStatus::CANCELED:
-      RCLCPP_INFO(get_logger(), "Navigation canceled");
-      follow_waypoints_action_server_->terminate_all();
-      break;
-
-    default:
-      throw std::logic_error("Invalid status return from BT");
-  }
-
-
-}
 
 void
 BtNavigator::initializeGoalPose()
@@ -320,14 +268,77 @@ BtNavigator::initializeGoalPose()
 }
 
 void
-BtNavigator::initializeWaypoints()
+BtNavigator::followPath()
 {
-  auto goal = follow_waypoints_action_server_->get_current_goal();
+  initializePath();
 
-  RCLCPP_INFO(get_logger(), "Begin follow waypoints");
 
-  // Update the goal pose on the blackboard
-  blackboard_->set("goal", goal->poses[goal->poses.size() - 1]);
+  auto is_canceling = [this]() {
+      if (follow_path_action_server_ == nullptr) {
+        RCLCPP_DEBUG(get_logger(), "Action server unavailable. Canceling.");
+        return true;
+      }
+
+      if (!follow_path_action_server_->is_server_active()) {
+        RCLCPP_DEBUG(get_logger(), "Action server is inactive. Canceling.");
+        return true;
+      }
+
+      return follow_path_action_server_->is_cancel_requested();
+    };
+  
+  // Create the Behavior Tree from the XML input
+  // TODO: find placement in xml_strings_
+  BT::Tree tree = bt_->buildTreeFromText(xml_strings_[1], blackboard_);
+
+  RosTopicLogger topic_logger(client_node_, tree);
+
+  auto on_loop = [&]() {
+      if (follow_path_action_server_->is_preempt_requested()) {
+        RCLCPP_INFO(get_logger(), "Received path preemption request");
+        follow_path_action_server_->accept_pending_goal();
+        initializePath();
+      }
+      topic_logger.flush();
+    };
+
+  // Execute the BT that was previously created in the configure step
+  nav2_behavior_tree::BtStatus rc = bt_->run(&tree, on_loop, is_canceling);
+
+  switch (rc) {
+    case nav2_behavior_tree::BtStatus::SUCCEEDED:
+      RCLCPP_INFO(get_logger(), "Navigation succeeded");
+      follow_path_action_server_->succeeded_current();
+      break;
+
+    case nav2_behavior_tree::BtStatus::FAILED:
+      RCLCPP_ERROR(get_logger(), "Navigation failed");
+      follow_path_action_server_->terminate_current();
+      break;
+
+    case nav2_behavior_tree::BtStatus::CANCELED:
+      RCLCPP_INFO(get_logger(), "Navigation canceled");
+      follow_path_action_server_->terminate_all();
+      break;
+
+    default:
+      throw std::logic_error("Invalid status return from BT");
+  }
+
+}
+
+void
+BtNavigator::initializePath()
+{
+  auto goal = follow_path_action_server_->get_current_goal();
+
+  RCLCPP_INFO(get_logger(), "Begin path following with %i points", goal->path.poses.size());
+
+  // Update the path on the blackboard
+  blackboard_->set<nav_msgs::msg::Path>("path", goal->path); 
+  blackboard_->set<std::string>("controller_id", goal->controller_id);
+  blackboard_->set<std::string>("server_name", "FollowPath");
+
 }
 
 void
@@ -335,7 +346,7 @@ BtNavigator::onGoalPoseReceived(const geometry_msgs::msg::PoseStamped::SharedPtr
 {
   nav2_msgs::action::NavigateToPose::Goal goal;
   goal.pose = *pose;
-  self_client_->async_send_goal(goal);
+  self_navigate_to_pose_client_->async_send_goal(goal);
 }
 
 }  // namespace nav2_bt_navigator

@@ -23,7 +23,7 @@
 #include "nav2_behavior_tree/behavior_tree_engine.hpp"
 #include "nav2_util/lifecycle_node.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
-#include "nav2_msgs/action/follow_waypoints.hpp"
+#include "nav2_msgs/action/follow_path.hpp"
 #include "nav_msgs/msg/path.hpp"
 #include "nav2_util/simple_action_server.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -90,27 +90,24 @@ protected:
   nav2_util::CallbackReturn on_error(const rclcpp_lifecycle::State & state) override;
 
   /** Action Servers */
-
   using NavigateToPoseActionServer = nav2_util::SimpleActionServer<nav2_msgs::action::NavigateToPose>;
+  using FollowPathActionServer = nav2_util::SimpleActionServer<nav2_msgs::action::FollowPath>;
   std::unique_ptr<NavigateToPoseActionServer> navigate_to_pose_action_server_;
-
-  using FollowWaypointsActionServer = nav2_util::SimpleActionServer<nav2_msgs::action::FollowWaypoints>;
-  std::unique_ptr<FollowWaypointsActionServer> follow_waypoints_action_server_;
-
+  std::unique_ptr<FollowPathActionServer> follow_path_action_server_;
 
   /**
    * @brief Action server callbacks
    */
   void navigateToPose();
 
-  void followWaypoints();
+  void followPath();
 
   /**
    * @brief Goal pose initialization on the blackboard
    */
   void initializeGoalPose();
 
-  void initializeWaypoints();
+  void initializePath();
 
   /**
    * @brief A subscription and callback to handle the topic-based goal published
@@ -132,7 +129,8 @@ protected:
   std::vector<std::string> plugin_lib_names_;
 
   // A client that we'll use to send a command message to our own task server
-  rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SharedPtr self_client_;
+  rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SharedPtr self_navigate_to_pose_client_;
+  rclcpp_action::Client<nav2_msgs::action::FollowPath>::SharedPtr self_follow_path_client_;
 
   // A regular, non-spinning ROS node that we can use for calls to the action client
   rclcpp::Node::SharedPtr client_node_;
