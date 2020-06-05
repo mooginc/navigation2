@@ -120,7 +120,8 @@ protected:
   BT::Blackboard::Ptr blackboard_;
 
   // The XML strings that defines the Behavior Trees to create
-  std::vector<std::string> xml_strings_;
+  std::string navigate_to_pose_xml_string_;
+  std::string follow_path_xml_string_;
 
   // The wrapper class for the BT functionality
   std::unique_ptr<nav2_behavior_tree::BehaviorTreeEngine> bt_;

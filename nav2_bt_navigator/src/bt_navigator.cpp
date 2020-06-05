@@ -33,10 +33,8 @@ BtNavigator::BtNavigator()
   RCLCPP_INFO(get_logger(), "Creating");
 
   // Declare this node's parameters
-  declare_parameter("bt_xml_filenames",
-    rclcpp::ParameterValue(std::vector<std::string>({"navigate_behavior_tree_follow_waypoints.xml",
-      "navigate_behavior_tree_path_to_goal.xml"
-      })));
+  declare_parameter("bt_xml_filename");
+  declare_parameter("bt_xml_filename_follow_path");
 
   declare_parameter("plugin_lib_names",
     rclcpp::ParameterValue(std::vector<std::string>({"nav2_behavior_tree_nodes"})));
@@ -52,10 +50,27 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
 {
   RCLCPP_INFO(get_logger(), "Configuring");
 
+  // Get parameters
+
+  // Get the libraries to pull plugins from
+  get_parameter("plugin_lib_names", plugin_lib_names_);
+
+  // Get the behavior tree xml definitions
+  std::string bt_xml_filename_path_to_goal;
+  get_parameter("bt_xml_filename", bt_xml_filename_path_to_goal);
+
+  std::string bt_xml_filename_follow_path;
+  get_parameter("bt_xml_filename_follow_path", bt_xml_filename_follow_path);
+  bool is_follow_path_configured = false;
+  if (bt_xml_filename_follow_path != ""){
+    is_follow_path_configured = true;
+  }
+
   auto options = rclcpp::NodeOptions().arguments(
     {"--ros-args",
       "-r", std::string("__node:=") + get_name() + "_client_node",
       "--"});
+
   // Support for handling the topic-based goal pose from rviz
   client_node_ = std::make_shared<rclcpp::Node>("_", options);
 
@@ -92,9 +107,6 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
     get_node_waitables_interface(),
     "FollowPath", std::bind(&BtNavigator::followPath, this), false);
 
-  // Get the libraries to pull plugins from
-  get_parameter("plugin_lib_names", plugin_lib_names_);
-
   // Create the class that registers our custom nodes and executes the BT
   bt_ = std::make_unique<nav2_behavior_tree::BehaviorTreeEngine>(plugin_lib_names_);
 
@@ -108,25 +120,33 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
   blackboard_->set<bool>("path_updated", false);  // NOLINT
   blackboard_->set<bool>("initial_pose_received", false);  // NOLINT
 
-  // Get the BT filename to use from the node parameter
-  std::vector<std::string> bt_xml_filenames;
-  get_parameter("bt_xml_filenames", bt_xml_filenames);
-
   // Read the input BT XML from the specified files into strings
-  for (size_t i = 0; i < bt_xml_filenames.size(); i++){
-    // Read xml configuration
-    std::ifstream xml_file(bt_xml_filenames[i]);
+  std::ifstream xml_file_path_to_goal(bt_xml_filename_path_to_goal);
 
-    if (!xml_file.good()) {
-      RCLCPP_ERROR(get_logger(), "Couldn't open input XML file: %s", bt_xml_filenames[i].c_str());
-      return nav2_util::CallbackReturn::FAILURE;
+  if (!xml_file_path_to_goal.good()) {
+    RCLCPP_ERROR(get_logger(), "Couldn't open input path to goal XML file: %s", bt_xml_filename_path_to_goal.c_str());
+    return nav2_util::CallbackReturn::FAILURE;
+  }
+
+  navigate_to_pose_xml_string_ = std::string(std::istreambuf_iterator<char>(xml_file_path_to_goal),
+      std::istreambuf_iterator<char>());
+
+  RCLCPP_DEBUG(get_logger(), "Behavior Tree file: '%s'", bt_xml_filename_path_to_goal.c_str());
+  RCLCPP_DEBUG(get_logger(), "Behavior Tree XML: %s", navigate_to_pose_xml_string_.c_str());
+
+  if (is_follow_path_configured){
+    std::ifstream xml_file_follow_path(bt_xml_filename_follow_path);
+
+    if (!xml_file_follow_path.good()) {
+    RCLCPP_ERROR(get_logger(), "Couldn't open input follow path XML file: %s", bt_xml_filename_follow_path.c_str());
+    return nav2_util::CallbackReturn::FAILURE;
     }
 
-    xml_strings_.push_back(std::string(std::istreambuf_iterator<char>(xml_file),
-        std::istreambuf_iterator<char>()));
+    follow_path_xml_string_ = std::string(std::istreambuf_iterator<char>(xml_file_follow_path),
+      std::istreambuf_iterator<char>());
 
-    RCLCPP_DEBUG(get_logger(), "Behavior Tree file: '%s'", bt_xml_filenames[i].c_str());
-    RCLCPP_DEBUG(get_logger(), "Behavior Tree XML: %s", xml_strings_[i].c_str());
+    RCLCPP_DEBUG(get_logger(), "Behavior Tree file: '%s'", bt_xml_filename_follow_path.c_str());
+    RCLCPP_DEBUG(get_logger(), "Behavior Tree XML: %s", follow_path_xml_string_.c_str());
   }
 
   return nav2_util::CallbackReturn::SUCCESS;
@@ -174,7 +194,8 @@ BtNavigator::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   navigate_to_pose_action_server_.reset();
   follow_path_action_server_.reset();
   plugin_lib_names_.clear();
-  xml_strings_.clear();
+  navigate_to_pose_xml_string_.clear();
+  follow_path_xml_string_.clear();
   blackboard_.reset();
   bt_.reset();
 
@@ -216,8 +237,7 @@ BtNavigator::navigateToPose()
     };
 
   // Create the Behavior Tree from the XML input
-  // TODO: find placement in xml_strings_
-  BT::Tree tree = bt_->buildTreeFromText(xml_strings_[0], blackboard_);
+  BT::Tree tree = bt_->buildTreeFromText(navigate_to_pose_xml_string_, blackboard_);
 
   RosTopicLogger topic_logger(client_node_, tree);
 
@@ -271,8 +291,7 @@ void
 BtNavigator::followPath()
 {
   initializePath();
-
-
+  
   auto is_canceling = [this]() {
       if (follow_path_action_server_ == nullptr) {
         RCLCPP_DEBUG(get_logger(), "Action server unavailable. Canceling.");
@@ -288,8 +307,7 @@ BtNavigator::followPath()
     };
   
   // Create the Behavior Tree from the XML input
-  // TODO: find placement in xml_strings_
-  BT::Tree tree = bt_->buildTreeFromText(xml_strings_[1], blackboard_);
+  BT::Tree tree = bt_->buildTreeFromText(follow_path_xml_string_, blackboard_);
 
   RosTopicLogger topic_logger(client_node_, tree);
 
@@ -336,8 +354,6 @@ BtNavigator::initializePath()
 
   // Update the path on the blackboard
   blackboard_->set<nav_msgs::msg::Path>("path", goal->path); 
-  blackboard_->set<std::string>("controller_id", goal->controller_id);
-  blackboard_->set<std::string>("server_name", "FollowPath");
 
 }
 
