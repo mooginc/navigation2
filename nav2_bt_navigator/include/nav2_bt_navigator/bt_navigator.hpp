@@ -134,7 +134,8 @@ protected:
   rclcpp_action::Client<nav2_msgs::action::FollowPath>::SharedPtr self_follow_path_client_;
 
   // A regular, non-spinning ROS node that we can use for calls to the action client
-  rclcpp::Node::SharedPtr client_node_;
+  rclcpp::Node::SharedPtr navigate_to_pose_client_node_;
+  rclcpp::Node::SharedPtr follow_path_client_node_;
 
   // Spinning transform that can be used by the BT nodes
   std::shared_ptr<tf2_ros::Buffer> tf_;

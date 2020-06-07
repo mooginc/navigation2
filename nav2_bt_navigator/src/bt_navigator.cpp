@@ -66,19 +66,24 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
     is_follow_path_configured = true;
   }
 
-  auto options = rclcpp::NodeOptions().arguments(
-    {"--ros-args",
-      "-r", std::string("__node:=") + get_name() + "_client_node",
-      "--"});
-
   // Support for handling the topic-based goal pose from rviz
-  client_node_ = std::make_shared<rclcpp::Node>("_", options);
+  auto navigate_to_pose_options = rclcpp::NodeOptions().arguments(
+    {"--ros-args",
+      "-r", std::string("__node:=") + get_name() + "_navigate_to_pose_client_node",
+      "--"});
+  navigate_to_pose_client_node_ = std::make_shared<rclcpp::Node>("_", navigate_to_pose_options);
+
+  auto follow_path_options = rclcpp::NodeOptions().arguments(
+    {"--ros-args",
+      "-r", std::string("__node:=") + get_name() + "_follow_path_client_node",
+      "--"});
+  follow_path_client_node_ = std::make_shared<rclcpp::Node>("_", follow_path_options);
 
   self_navigate_to_pose_client_ = rclcpp_action::create_client<nav2_msgs::action::NavigateToPose>(
-    client_node_, "NavigateToPose");
+    navigate_to_pose_client_node_, "NavigateToPose");
   
   self_follow_path_client_ = rclcpp_action::create_client<nav2_msgs::action::FollowPath>(
-    client_node_, "FollowPath");
+    follow_path_client_node_, "FollowPath");
 
   tf_ = std::make_shared<tf2_ros::Buffer>(get_clock());
   auto timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
@@ -114,7 +119,6 @@ BtNavigator::on_configure(const rclcpp_lifecycle::State & /*state*/)
   blackboard_ = BT::Blackboard::create();
 
   // Put items on the blackboard
-  blackboard_->set<rclcpp::Node::SharedPtr>("node", client_node_);  // NOLINT
   blackboard_->set<std::shared_ptr<tf2_ros::Buffer>>("tf_buffer", tf_);  // NOLINT
   blackboard_->set<std::chrono::milliseconds>("server_timeout", std::chrono::milliseconds(10));  // NOLINT
   blackboard_->set<bool>("path_updated", false);  // NOLINT
@@ -183,7 +187,8 @@ BtNavigator::on_cleanup(const rclcpp_lifecycle::State & /*state*/)
   //              and the main thread resetting the resources, see #1344
 
   goal_sub_.reset();
-  client_node_.reset();
+  navigate_to_pose_client_node_.reset();
+  follow_path_client_node_.reset();
   self_navigate_to_pose_client_.reset();
   self_follow_path_client_.reset();
 
@@ -220,6 +225,9 @@ BtNavigator::on_shutdown(const rclcpp_lifecycle::State & /*state*/)
 void
 BtNavigator::navigateToPose()
 {
+  // Put the corresponding node on the blackboard
+  blackboard_->set<rclcpp::Node::SharedPtr>("node", navigate_to_pose_client_node_);  // NOLINT
+
   initializeGoalPose();
 
   auto is_canceling = [this]() {
@@ -239,7 +247,7 @@ BtNavigator::navigateToPose()
   // Create the Behavior Tree from the XML input
   BT::Tree tree = bt_->buildTreeFromText(navigate_to_pose_xml_string_, blackboard_);
 
-  RosTopicLogger topic_logger(client_node_, tree);
+  RosTopicLogger topic_logger(navigate_to_pose_client_node_, tree);
 
   auto on_loop = [&]() {
       if (navigate_to_pose_action_server_->is_preempt_requested()) {
@@ -290,6 +298,9 @@ BtNavigator::initializeGoalPose()
 void
 BtNavigator::followPath()
 {
+  // Put the corresponding node on the blackboard
+  blackboard_->set<rclcpp::Node::SharedPtr>("node", follow_path_client_node_);  // NOLINT
+
   initializePath();
   
   auto is_canceling = [this]() {
@@ -309,7 +320,7 @@ BtNavigator::followPath()
   // Create the Behavior Tree from the XML input
   BT::Tree tree = bt_->buildTreeFromText(follow_path_xml_string_, blackboard_);
 
-  RosTopicLogger topic_logger(client_node_, tree);
+  RosTopicLogger topic_logger(follow_path_client_node_, tree);
 
   auto on_loop = [&]() {
       if (follow_path_action_server_->is_preempt_requested()) {
